@@ -513,6 +513,30 @@ impl BuildDiagnostics {
         )
     }
 
+    /// Warns when `since` is newer than the edition of the file of `source`.
+    /// `what` names the builtin, such as "The property 'stroke'".
+    /// `since` only runs when the edition is older than this release.
+    pub fn check_since(
+        &mut self,
+        what: impl FnOnce() -> String,
+        since: impl FnOnce() -> Option<crate::project_file::SlintEdition>,
+        source: &dyn Spanned,
+    ) {
+        use crate::project_file::SlintEdition;
+        let Some(file) = source.source_file() else { return };
+        let edition = file.edition();
+        let effective = edition.unwrap_or(SlintEdition::V1_18);
+        if file.path().is_builtin() || effective >= SlintEdition::current() {
+            return;
+        }
+        let Some(since) = since().filter(|since| effective < *since) else { return };
+        let fix = match edition {
+            Some(edition) => format!("the edition is {edition}: raise it to {since}"),
+            None => format!("no edition is set: set it to {since}"),
+        };
+        self.push_warning(format!("{} is new in Slint {since}, but {fix}", what()), source);
+    }
+
     /// Return true if there is at least one compilation error for this file
     pub fn has_errors(&self) -> bool {
         self.inner.iter().any(|diag| diag.level == DiagnosticLevel::Error)

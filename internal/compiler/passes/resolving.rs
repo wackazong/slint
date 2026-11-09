@@ -2807,6 +2807,7 @@ fn lookup_qualified_name_node(
     if let Some(depr) = result.deprecated() {
         ctx.diag.push_member_deprecation_warning("property", &first_str, depr, &first);
     }
+    check_since(&result, &first_str, &first, ctx);
 
     match result {
         LookupResult::Expression { expression: Expression::ElementReference(e), .. } => {
@@ -2941,6 +2942,9 @@ fn continue_lookup_within_element(
     // A property or function whose type is outside the Slint SC subset
     // doesn't resolve; callbacks do, so a handler can invoke them.
     let sc_resolves = !ctx.diag.is_slint_sc() || lookup_result.property_type.is_slint_sc();
+    if !infers_alias_type(ctx) {
+        lookup_result.check_since(&prop_name, &second, ctx.diag);
+    }
 
     if sc_resolves && lookup_result.property_type.is_property_type() {
         if !local_to_component && lookup_result.property_visibility == PropertyVisibility::Private {
@@ -3066,6 +3070,80 @@ fn continue_lookup_within_element(
     }
 }
 
+/// Whether `ctx` resolves an alias to infer its type: the alias is resolved again afterwards.
+fn infers_alias_type(ctx: &LookupCtx) -> bool {
+    matches!(ctx.property_type, Type::InferredProperty | Type::InferredCallback)
+}
+
+/// Warns when the builtin global, member, enum, enum value or struct field that `result`
+/// refers to by `name` is newer than the edition of the file of `source`.
+fn check_since(result: &LookupResult, name: &str, source: &dyn Spanned, ctx: &mut LookupCtx) {
+    if infers_alias_type(ctx) {
+        return;
+    }
+    let diag = &mut *ctx.diag;
+    let member = match result {
+        LookupResult::Expression { expression: Expression::PropertyReference(nr), .. }
+        | LookupResult::Callable(LookupResultCallable::Callable(
+            Callable::Callback(nr) | Callable::Function(nr),
+        )) => Some(nr),
+        LookupResult::Callable(LookupResultCallable::MemberFunction { member, .. }) => {
+            match &**member {
+                LookupResultCallable::Callable(Callable::Function(nr)) => Some(nr),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    if let Some(nr) = member {
+        let lookup = || {
+            let element = nr.element();
+            let element = element.borrow();
+            let lookup = element.lookup_property(nr.name(), PropertyLookupMode::InternalName);
+            (lookup.since, crate::object_tree::member_kind(&lookup.property_type))
+        };
+        diag.check_since(|| format!("The {} '{name}'", lookup().1), || lookup().0, source);
+        return;
+    }
+    match result {
+        LookupResult::Enumeration(enumeration) => {
+            let since = || enumeration.builtin_since(None);
+            diag.check_since(|| format!("The enum '{}'", enumeration.name), since, source);
+        }
+        LookupResult::Expression { expression: Expression::EnumerationValue(value), .. } => {
+            let enumeration = &value.enumeration;
+            let since = || enumeration.builtin_since(Some(value.value));
+            let what = || format!("The enum value '{}.{name}'", enumeration.name);
+            diag.check_since(what, since, source);
+        }
+        LookupResult::Expression { expression: Expression::ElementReference(element), .. } => {
+            let global = || element.upgrade()?.borrow().builtin_type().filter(|b| b.is_global);
+            let what = || {
+                format!("The element '{}'", global().map(|g| g.name.clone()).unwrap_or_default())
+            };
+            diag.check_since(what, || global()?.since, source);
+        }
+        LookupResult::Expression {
+            expression: Expression::StructFieldAccess { base, name },
+            ..
+        } => {
+            let since = || match base.ty() {
+                Type::Struct(s) => s.builtin_since(Some(name)),
+                _ => None,
+            };
+            let what = || {
+                let struct_name = match base.ty() {
+                    Type::Struct(s) => s.name.slint_name(),
+                    _ => None,
+                };
+                format!("The field '{}.{name}'", struct_name.unwrap_or_default())
+            };
+            diag.check_since(what, since, source);
+        }
+        _ => {}
+    }
+}
+
 fn maybe_lookup_object(
     mut base: LookupResult,
     it: impl Iterator<Item = crate::parser::SyntaxToken>,
@@ -3076,6 +3154,7 @@ fn maybe_lookup_object(
         ctx.current_token = Some(next.clone().into());
         match base.lookup(ctx, &next_str) {
             Some(r) => {
+                check_since(&r, &next_str, &next, ctx);
                 base = r;
             }
             None => {
