@@ -46,10 +46,16 @@ pub struct SlintEdition {
 }
 
 impl SlintEdition {
+    pub const V1_17: Self = Self { major: 1, minor: 17 };
     /// The release before editions, whose language a file without an edition uses.
     pub const V1_18: Self = Self { major: 1, minor: 18 };
     pub const V1_19: Self = Self { major: 1, minor: 19 };
     pub const V1_20: Self = Self { major: 1, minor: 20 };
+    /// The edition whose language a file with `edition` uses.
+    pub fn effective(edition: Option<Self>) -> Self {
+        edition.unwrap_or(Self::V1_18)
+    }
+
     /// The newest edition that changes the behavior of code that compiles without warnings.
     pub const LATEST_BEHAVIOR_CHANGE: Self = Self::V1_19;
 

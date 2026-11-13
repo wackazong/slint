@@ -522,8 +522,8 @@ pub fn reserved_property(name: std::borrow::Cow<'_, str>) -> PropertyLookupResul
         return PropertyLookupResult {
             property_type: ty,
             is_slint_sc: matches!(name.as_ref(), "x" | "y" | "width" | "height"),
-            is_shadowable: name == "ensure-visible",
-            since: None,
+            is_shadowable: false,
+            since: (name == "ensure-visible").then_some(SlintEdition::V1_19),
             resolved_name: name,
             is_local_to_component: false,
             is_in_direct_base: false,
